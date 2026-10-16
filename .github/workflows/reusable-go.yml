@@ -25,9 +25,9 @@ on:
         type: string
         default: go.mod
       race:
-        description: Run `go test -race`.
+        description: Run `go test -race` (needs CGO_ENABLED=1 and a C compiler on the runner).
         type: boolean
-        default: true
+        default: false
       lint:
         description: Run golangci-lint.
         type: boolean
@@ -73,4 +73,6 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
 
       - name: go test
+        env:
+          CGO_ENABLED: ${{ inputs.race && '1' || '0' }}
         run: go test ${{ inputs.race && '-race' || '' }} ./...
