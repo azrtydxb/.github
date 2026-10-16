@@ -56,9 +56,15 @@ jobs:
         with:
           github-token: ${{ secrets.github-token }}
 
+      # No `--delete-branch`: this job does not check out the repo, so gh cannot
+      # resolve a current branch; branch cleanup is handled by the org-wide
+      # `delete_branch_on_merge` setting instead. A conflicted or already-blocked
+      # PR simply cannot arm auto-merge, which is not an error.
       - name: Enable auto-merge
         if: ${{ inputs.allow-major || steps.meta.outputs.update-type != 'version-update:semver-major' }}
-        run: gh pr merge --auto --${{ inputs.merge-method }} --delete-branch "$PR_URL"
+        run: |
+          gh pr merge --auto --${{ inputs.merge-method }} "$PR_URL" \
+            || echo "::notice::auto-merge not enabled (PR may be conflicted or blocked)"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.github-token }}
