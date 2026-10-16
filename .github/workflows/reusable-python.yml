@@ -1,0 +1,57 @@
+# Reusable Python CI — the azrtydxb standard.
+name: reusable-python
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label. Use arc-azrtydxb (arm64) unless x86 is required.
+        type: string
+        default: arc-azrtydxb
+      working-directory:
+        description: Directory holding pyproject.toml / requirements.txt.
+        type: string
+        default: "."
+      python-version:
+        description: Python version for actions/setup-python.
+        type: string
+        default: "3.12"
+      install:
+        description: Shell command that installs the project and test deps.
+        type: string
+        default: "pip install -e '.[dev]' || pip install -r requirements.txt"
+      timeout:
+        description: Job timeout in minutes.
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.working-directory }}/**/requirements*.txt
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          ${{ inputs.install }}
+
+      - name: ruff
+        run: |
+          if command -v ruff >/dev/null; then ruff check .; else echo "ruff not installed; skipping"; fi
+
+      - name: pytest
+        run: python -m pytest -q

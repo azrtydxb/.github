@@ -1,0 +1,64 @@
+# Reusable Dependabot auto-merge — the azrtydxb standard.
+#
+# The caller owns the trigger (`pull_request_target`) and passes its token.
+# This only *enables* auto-merge for routine (patch/minor) bumps; branch
+# protection is the real gate — GitHub still blocks the merge until the
+# required checks pass, and squashes once they do. A failing bump stays a red
+# PR, never a broken main.
+#
+# Caller example (12 lines, copy into .github/workflows/dependabot-automerge.yml):
+#
+#   name: dependabot-automerge
+#   on:
+#     pull_request_target:
+#       types: [opened, reopened, synchronize, ready_for_review]
+#   permissions:
+#     contents: write
+#     pull-requests: write
+#   jobs:
+#     automerge:
+#       uses: azrtydxb/.github/.github/workflows/reusable-dependabot-automerge.yml@main
+#       secrets:
+#         github-token: ${{ secrets.GITHUB_TOKEN }}
+name: reusable-dependabot-automerge
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Keep this GitHub-hosted; the job is tiny and must not consume a LAN runner.
+        type: string
+        default: ubuntu-latest
+      merge-method:
+        description: squash | rebase | merge
+        type: string
+        default: squash
+      allow-major:
+        description: Also auto-merge major bumps (off by default).
+        type: boolean
+        default: false
+    secrets:
+      github-token:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
+        with:
+          github-token: ${{ secrets.github-token }}
+
+      - name: Enable auto-merge
+        if: ${{ inputs.allow-major || steps.meta.outputs.update-type != 'version-update:semver-major' }}
+        run: gh pr merge --auto --${{ inputs.merge-method }} --delete-branch "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.github-token }}

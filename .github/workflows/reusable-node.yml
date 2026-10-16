@@ -1,0 +1,73 @@
+# Reusable Node/TypeScript CI — the azrtydxb standard.
+#
+# Covers npm, pnpm and yarn. Typecheck/lint/build run only when the script
+# exists, so the same workflow serves a library and a full app.
+name: reusable-node
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label. Use arc-azrtydxb (arm64) unless x86 is required.
+        type: string
+        default: arc-azrtydxb
+      working-directory:
+        description: Directory holding package.json.
+        type: string
+        default: "."
+      node-version:
+        description: Node major/version passed to actions/setup-node.
+        type: string
+        default: "22"
+      package-manager:
+        description: npm | pnpm | yarn
+        type: string
+        default: npm
+      timeout:
+        description: Job timeout in minutes.
+        type: number
+        default: 20
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enable pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@c5ba7f7862a0f64c1b1a05fbac13e0b8e86ba08c # v4
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ inputs.working-directory }}/**/package-lock.json
+
+      - name: install
+        run: |
+          case "${{ inputs.package-manager }}" in
+            npm)  npm ci ;;
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --immutable ;;
+            *) echo "::error::unsupported package-manager"; exit 1 ;;
+          esac
+
+      - name: typecheck
+        run: ${{ inputs.package-manager }} run typecheck --if-present
+
+      - name: lint
+        run: ${{ inputs.package-manager }} run lint --if-present
+
+      - name: test
+        run: ${{ inputs.package-manager }} test --if-present
+
+      - name: build
+        run: ${{ inputs.package-manager }} run build --if-present

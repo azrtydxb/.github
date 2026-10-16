@@ -1,0 +1,57 @@
+# Reusable Rust CI — the azrtydxb standard.
+#
+# The toolchain ref (`dtolnay/rust-toolchain@stable`) is a deliberately moving
+# channel, so it is the one exception to SHA pinning: pinning a channel SHA
+# would freeze the compiler. Everything else is SHA-pinned.
+name: reusable-rust
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label. Use arc-azrtydxb (arm64) unless x86 is required.
+        type: string
+        default: arc-azrtydxb
+      working-directory:
+        description: Directory holding Cargo.toml (workspace or crate).
+        type: string
+        default: "."
+      clippy:
+        description: Run clippy with -D warnings.
+        type: boolean
+        default: true
+      timeout:
+        description: Job timeout in minutes.
+        type: number
+        default: 40
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ inputs.working-directory }}
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        if: ${{ inputs.clippy }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-features

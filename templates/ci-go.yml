@@ -1,0 +1,35 @@
+# Example Go caller — the shape every Go repo should converge on.
+# Replace the language workflow with reusable-node/rust/python as needed.
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go:
+    uses: azrtydxb/.github/.github/workflows/reusable-go.yml@main
+    with:
+      working-directory: .
+      race: true
+      lint: true
+
+  security:
+    uses: azrtydxb/.github/.github/workflows/reusable-security.yml@main
+
+  gate:
+    if: always()
+    needs: [go, security]
+    runs-on: arc-azrtydxb
+    timeout-minutes: 5
+    steps:
+      - name: Verify
+        run: |
+          [ "${{ needs.go.result }}" = "success" ] &&
+          [ "${{ needs.security.result }}" = "success" ] || exit 1

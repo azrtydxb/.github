@@ -1,0 +1,76 @@
+# Reusable Go CI — the azrtydxb standard.
+#
+# Called by product repos with `uses: azrtydxb/.github/.github/workflows/reusable-go.yml@main`.
+# Defaults to the org's arm64 self-hosted runner (`arc-azrtydxb`), which is the
+# only general-purpose runner platform we maintain (kw + OKE are arm64).
+#
+# The caller still owns the trigger, `concurrency`, path filters and the single
+# required `gate` check; this workflow owns the toolchain, caching and the
+# build/vet/lint/test sequence so every Go repo behaves the same.
+name: reusable-go
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label. Use arc-azrtydxb (arm64) unless x86 is required.
+        type: string
+        default: arc-azrtydxb
+      working-directory:
+        description: Directory holding go.mod.
+        type: string
+        default: "."
+      go-version-file:
+        description: Path to the go.mod (or .go-version) that pins the toolchain.
+        type: string
+        default: go.mod
+      race:
+        description: Run `go test -race`.
+        type: boolean
+        default: true
+      lint:
+        description: Run golangci-lint.
+        type: boolean
+        default: true
+      timeout:
+        description: Job timeout in minutes.
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
+          cache: true
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
+
+      - name: gofmt
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "::error::gofmt needed on:"; echo "$files"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        if: ${{ inputs.lint }}
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: go test
+        run: go test ${{ inputs.race && '-race' || '' }} ./...
