@@ -1,5 +1,9 @@
 # Example Go caller — the shape every Go repo should converge on.
 # Replace the language workflow with reusable-node/rust/python as needed.
+#
+# This is the PR/commit tier only: fast, hermetic unit tests. Integration and
+# e2e work belongs in nightly-integration.yml / release-full.yml (also in
+# templates/). See docs/ci-standard.md §Test tiers.
 name: ci
 
 on:
@@ -16,8 +20,9 @@ jobs:
   go:
     uses: azrtydxb/.github/.github/workflows/reusable-go.yml@main
     with:
+      tier: unit
       working-directory: .
-      race: true
+      race: false
       lint: true
 
   security:

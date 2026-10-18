@@ -3,6 +3,12 @@
 # Covers npm, pnpm and yarn. typecheck/lint/test/build run only when the script
 # exists, so the same workflow serves a library and a full app. Use `pre-scripts`
 # for codegen that must run before the checks (e.g. `prisma generate`).
+#
+# TIERS — see docs/ci-standard.md §Test tiers.
+#   unit        (default) PR / commit gate. typecheck + lint + unit `test` + build.
+#               Must finish well under 5 minutes. No servers, browsers or e2e.
+#   integration nightly. unit + the `test:integration` script (services, db).
+#   full        versioned release. unit + integration + the `test:e2e` script.
 name: reusable-node
 
 on:
@@ -28,12 +34,16 @@ on:
         description: Lockfile name used for the cache key (matches package-manager).
         type: string
         default: package-lock.json
+      tier:
+        description: unit | integration | full (see docs/ci-standard.md §Test tiers).
+        type: string
+        default: unit
       pre-scripts:
         description: Shell command(s) run after install and before the checks (codegen).
         type: string
         default: ""
       timeout:
-        description: Job timeout in minutes.
+        description: Job timeout in minutes. Keep the unit tier small.
         type: number
         default: 20
 
@@ -73,6 +83,7 @@ jobs:
         if: ${{ inputs.pre-scripts != '' }}
         run: ${{ inputs.pre-scripts }}
 
+      # unit tier: static checks + unit test + build. Stops here on a PR.
       - name: typecheck / lint / test / build
         run: |
           run_if() {
@@ -88,3 +99,27 @@ jobs:
           run_if lint
           run_if test
           run_if build
+
+      # integration tier (nightly) and above: add the integration script if present.
+      - name: test:integration
+        if: ${{ inputs.tier == 'integration' || inputs.tier == 'full' }}
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['test:integration'] ? 0 : 1)"; then
+            echo "::group::test:integration"
+            ${{ inputs.package-manager }} run test:integration
+            echo "::endgroup::"
+          else
+            echo "no 'test:integration' script; skipping"
+          fi
+
+      # full tier (versioned release): add e2e if present.
+      - name: test:e2e
+        if: ${{ inputs.tier == 'full' }}
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['test:e2e'] ? 0 : 1)"; then
+            echo "::group::test:e2e"
+            ${{ inputs.package-manager }} run test:e2e
+            echo "::endgroup::"
+          else
+            echo "no 'test:e2e' script; skipping"
+          fi

@@ -1,4 +1,14 @@
 # Reusable Python CI — the azrtydxb standard.
+#
+# TIERS — see docs/ci-standard.md §Test tiers.
+#   unit        (default) PR / commit gate. ruff + hermetic pytest
+#               (`-m "not integration and not e2e"`). Must finish well under 5 minutes.
+#   integration nightly. ruff + pytest without e2e (`-m "not e2e"`).
+#   full        versioned release. whole suite (all markers).
+#
+# Mark integration/e2e tests so they can be selected:
+#   @pytest.mark.integration   needs services / network / db
+#   @pytest.mark.e2e           full end-to-end
 name: reusable-python
 
 on:
@@ -16,12 +26,16 @@ on:
         description: Python version for actions/setup-python.
         type: string
         default: "3.12"
+      tier:
+        description: unit | integration | full (see docs/ci-standard.md §Test tiers).
+        type: string
+        default: unit
       install:
         description: Shell command that installs the project and test deps.
         type: string
         default: "pip install -e '.[dev]' || pip install -r requirements.txt"
       timeout:
-        description: Job timeout in minutes.
+        description: Job timeout in minutes. Keep the unit tier small.
         type: number
         default: 20
 
@@ -53,5 +67,14 @@ jobs:
         run: |
           if command -v ruff >/dev/null; then ruff check .; else echo "ruff not installed; skipping"; fi
 
-      - name: pytest
+      - name: pytest (unit)
+        if: ${{ inputs.tier == 'unit' }}
+        run: python -m pytest -q -m "not integration and not e2e"
+
+      - name: pytest (unit + integration)
+        if: ${{ inputs.tier == 'integration' }}
+        run: python -m pytest -q -m "not e2e"
+
+      - name: pytest (full)
+        if: ${{ inputs.tier == 'full' }}
         run: python -m pytest -q

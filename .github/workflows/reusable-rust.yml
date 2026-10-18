@@ -3,6 +3,13 @@
 # The toolchain ref (`dtolnay/rust-toolchain@stable`) is a deliberately moving
 # channel, so it is the one exception to SHA pinning: pinning a channel SHA
 # would freeze the compiler. Everything else is SHA-pinned.
+#
+# TIERS — see docs/ci-standard.md §Test tiers.
+#   unit        (default) PR / commit gate. fmt + clippy + `cargo test` (lib/bin).
+#               Must finish well under 5 minutes. Integration tests are `#[ignore]`d
+#               or behind the `integration` feature so they are not run here.
+#   integration nightly. unit + `--all-features` (service/network tests).
+#   full        versioned release. integration + ignored tests (`--include-ignored`).
 name: reusable-rust
 
 on:
@@ -16,12 +23,16 @@ on:
         description: Directory holding Cargo.toml (workspace or crate).
         type: string
         default: "."
+      tier:
+        description: unit | integration | full (see docs/ci-standard.md §Test tiers).
+        type: string
+        default: unit
       clippy:
         description: Run clippy with -D warnings.
         type: boolean
         default: true
       timeout:
-        description: Job timeout in minutes.
+        description: Job timeout in minutes. Keep the unit tier small.
         type: number
         default: 40
 
@@ -53,5 +64,14 @@ jobs:
         if: ${{ inputs.clippy }}
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: cargo test
+      - name: cargo test (unit)
+        if: ${{ inputs.tier == 'unit' }}
+        run: cargo test
+
+      - name: cargo test (unit + integration features)
+        if: ${{ inputs.tier == 'integration' }}
         run: cargo test --all-features
+
+      - name: "cargo test (full: all features + ignored)"
+        if: ${{ inputs.tier == 'full' }}
+        run: cargo test --all-features -- --include-ignored

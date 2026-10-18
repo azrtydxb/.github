@@ -7,6 +7,13 @@
 # The caller still owns the trigger, `concurrency`, path filters and the single
 # required `gate` check; this workflow owns the toolchain, caching and the
 # build/vet/lint/test sequence so every Go repo behaves the same.
+#
+# TIERS — see docs/ci-standard.md §Test tiers.
+#   unit        (default) PR / commit gate. Static checks + hermetic unit tests.
+#               Must finish well under 5 minutes. Integration tests must be
+#               behind `//go:build integration` so they are NOT compiled here.
+#   integration nightly. unit + `-tags integration` (services, containers, db).
+#   full        versioned release. integration + race + coverage.
 name: reusable-go
 
 on:
@@ -24,16 +31,24 @@ on:
         description: Path to the go.mod (or .go-version) that pins the toolchain.
         type: string
         default: go.mod
+      tier:
+        description: unit | integration | full (see docs/ci-standard.md §Test tiers).
+        type: string
+        default: unit
       race:
-        description: Run `go test -race` (needs CGO_ENABLED=1 and a C compiler on the runner).
+        description: Force `-race` regardless of tier (needs CGO_ENABLED=1 and a C compiler).
         type: boolean
         default: false
       lint:
         description: Run golangci-lint.
         type: boolean
         default: true
+      integration-tags:
+        description: Build tag guarding integration tests.
+        type: string
+        default: integration
       timeout:
-        description: Job timeout in minutes.
+        description: Job timeout in minutes. Keep the unit tier small.
         type: number
         default: 30
 
@@ -72,7 +87,31 @@ jobs:
         with:
           working-directory: ${{ inputs.working-directory }}
 
-      - name: go test
+      # unit: hermetic only. integration tests live behind `//go:build integration`.
+      - name: go test (unit)
+        if: ${{ inputs.tier == 'unit' }}
         env:
           CGO_ENABLED: ${{ inputs.race && '1' || '0' }}
         run: go test ${{ inputs.race && '-race' || '' }} ./...
+
+      # nightly: add the tagged integration suite.
+      - name: go test (unit + integration)
+        if: ${{ inputs.tier == 'integration' }}
+        env:
+          CGO_ENABLED: ${{ inputs.race && '1' || '0' }}
+        run: go test ${{ inputs.race && '-race' || '' }} -tags ${{ inputs.integration-tags }} -timeout 20m ./...
+
+      # release: integration + race + coverage.
+      - name: "go test (full: race + integration + coverage)"
+        if: ${{ inputs.tier == 'full' }}
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -tags ${{ inputs.integration-tags }} -covermode=atomic -coverprofile=coverage.out -timeout 30m ./...
+
+      - name: Upload coverage
+        if: ${{ inputs.tier == 'full' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: go-coverage
+          path: ${{ inputs.working-directory }}/coverage.out
+          if-no-files-found: ignore

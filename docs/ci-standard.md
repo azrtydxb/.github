@@ -32,10 +32,10 @@ runs-on: ${{ (github.event_name != 'pull_request' ||
 
 | Workflow | Language | Key inputs |
 | --- | --- | --- |
-| `reusable-go.yml` | Go | `working-directory`, `race`, `lint` |
-| `reusable-node.yml` | Node/TS | `working-directory`, `node-version`, `package-manager` |
-| `reusable-rust.yml` | Rust | `working-directory`, `clippy` |
-| `reusable-python.yml` | Python | `working-directory`, `python-version`, `install` |
+| `reusable-go.yml` | Go | `working-directory`, `tier`, `race`, `lint` |
+| `reusable-node.yml` | Node/TS | `working-directory`, `tier`, `node-version`, `package-manager` |
+| `reusable-rust.yml` | Rust | `working-directory`, `tier`, `clippy` |
+| `reusable-python.yml` | Python | `working-directory`, `tier`, `python-version`, `install` |
 | `reusable-docker-publish.yml` | images | `image`, `context`, `target`, `platforms` |
 | `reusable-security.yml` | any | `runner` |
 | `reusable-dependabot-automerge.yml` | any | `merge-method`, `allow-major` |
@@ -45,6 +45,40 @@ Reference them at `@main`:
 ```yaml
 uses: azrtydxb/.github/.github/workflows/reusable-go.yml@main
 ```
+
+## Test tiers
+
+Every repo splits its tests into **three tiers by trigger**, not one big job on
+every push. The PR gate must stay **under 5 minutes**; anything slower moves to a
+nightly or release trigger.
+
+| Tier | Trigger | What runs | Budget |
+| --- | --- | --- | --- |
+| `unit` | `pull_request`, `push` to main | fmt/lint/typecheck + **hermetic** unit tests. No containers, browsers, network, kind, or e2e. | **< 5 min** |
+| `integration` | `schedule` (nightly) | unit + tests that need services (db, containers, kind, testcontainers). | < 30 min |
+| `full` | `push` tag `v*` (release) | integration + e2e/playwright + race + coverage + full matrix. | no hard cap |
+
+Caller files (copy from `templates/`):
+
+- `ci.yml` → `tier: unit` (required `gate`)
+- `nightly.yml` → `tier: integration` (`templates/nightly-integration.yml`)
+- `release.yml` → `tier: full` (`templates/release-full.yml`)
+
+### How tests are separated (per language)
+
+The reusable workflows select the tier; the repo must actually keep the tiers
+apart, or the PR run still drags the slow tests in.
+
+| Language | unit | integration |
+| --- | --- | --- |
+| Go | default build; integration tests behind `//go:build integration` | `go test -tags integration ./...` |
+| Node | `npm test` | `npm run test:integration`, e2e in `test:e2e` |
+| Rust | `cargo test`; slow tests `#[ignore]` or behind the `integration` feature | `cargo test --all-features` |
+| Python | `pytest -m "not integration and not e2e"` | `@pytest.mark.integration`, e2e `@pytest.mark.e2e` |
+
+**Rule:** if a PR job exceeds 5 minutes, either (a) split it into parallel jobs,
+(b) move the slow part down a tier, or (c) both. Never gate merges on tests that
+need hardware, external services or a browser.
 
 ## Caller shape
 
