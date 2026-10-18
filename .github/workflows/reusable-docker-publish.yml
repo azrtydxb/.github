@@ -13,7 +13,7 @@ on:
       runner:
         description: Publish runner label.
         type: string
-        default: arc-azrtydxb-publish
+        default: arc-azrtydxb
       image:
         description: Image name under the registry, e.g. azrtydxb/novamail-web.
         type: string
@@ -76,7 +76,7 @@ jobs:
             [registry."192.168.10.131:5000"]
               insecure = true
             [registry."docker.io"]
-              mirrors = ["192.168.10.131"]
+              mirrors = ["ant.azrty.com"]
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:

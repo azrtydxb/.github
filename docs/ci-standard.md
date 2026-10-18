@@ -8,15 +8,15 @@ us with 9 runner labels, 4 action-pinning styles and almost no shared caching.
 
 | Use | Label |
 | --- | --- |
-| Linux CI, containers, **default** | `arc-azrtydxb` (arm64) |
-| Linux CI that must be x86 | `arc-azrtydxb-amd64` |
-| Build **and push** images to Nexus | `arc-azrtydxb-publish` (arm64) |
+| Linux CI, containers, image build **and push**, **default** | `arc-azrtydxb` (arm64) |
+| Linux CI or image builds that must be x86 | `arc-azrtydxb-amd64` |
 | Untrusted fork PRs / macOS/Windows | `ubuntu-latest`, `macos-latest`, `windows-latest` |
 
 Everything we run is arm64 (kw and OKE are arm64), so **default to arm64**.
 Do not request `linux/amd64` images unless a consumer actually needs them.
 
-**Retired:** `qnap-nas`, `novanas-amd64`, `[self-hosted, zfs]`,
+**Retired:** `arc-azrtydxb-publish`, `arc-azrtydxb-amd64-publish` (merged into the
+unified sets above, which run CI, CD and pushes from the same endpoint), `qnap-nas`, `novanas-amd64`, `[self-hosted, zfs]`,
 `[self-hosted, nvidia, gpu]`, `[self-hosted, novaflow-prod]`. They are not in the
 org runner inventory; jobs that ask for them never start.
 
