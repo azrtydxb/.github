@@ -56,12 +56,18 @@ jobs:
         with:
           github-token: ${{ secrets.github-token }}
 
-      # No `--delete-branch`: this job does not check out the repo, so gh cannot
-      # resolve a current branch; branch cleanup is handled by the org-wide
-      # `delete_branch_on_merge` setting instead. A conflicted or already-blocked
-      # PR simply cannot arm auto-merge, which is not an error.
+      # Enable auto-merge only for routine, classifiable bumps.
+      #
+      # `dependabot/fetch-metadata` leaves `update-type` EMPTY for the docker and
+      # github-actions ecosystems, and for npm majors that arrive without the
+      # `update-type: version-update:semver-major` label (NovaCRM's manifest
+      # updates for vitest 4->5, typescript 5->7, prisma 6->7 all lacked it). A
+      # blacklist (`!= semver-major`) therefore lets majors through whenever the
+      # label is missing or the ecosystem has no semver — the node 22->25 break
+      # was exactly that. Whitelist explicit patch/minor; every major or
+      # unclassifiable bump stays a human-review PR under branch protection.
       - name: Enable auto-merge
-        if: ${{ inputs.allow-major || steps.meta.outputs.update-type != 'version-update:semver-major' }}
+        if: ${{ inputs.allow-major || steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor' }}
         run: |
           gh pr merge --auto --${{ inputs.merge-method }} "$PR_URL" \
             || echo "::notice::auto-merge not enabled (PR may be conflicted or blocked)"
