@@ -6,11 +6,11 @@ us with 9 runner labels, 4 action-pinning styles and almost no shared caching.
 
 ## Runner labels (the only ones allowed)
 
-| Use | Label |
-| --- | --- |
-| Linux CI, containers, image build **and push**, **default** | `arc-azrtydxb` (arm64) |
-| Linux CI or image builds that must be x86 | `arc-azrtydxb-amd64` |
-| Untrusted fork PRs / macOS/Windows | `ubuntu-latest`, `macos-latest`, `windows-latest` |
+| Use                                                         | Label                                             |
+| ----------------------------------------------------------- | ------------------------------------------------- |
+| Linux CI, containers, image build **and push**, **default** | `arc-azrtydxb` (arm64)                            |
+| Linux CI or image builds that must be x86                   | `arc-azrtydxb-amd64`                              |
+| Untrusted fork PRs / macOS/Windows                          | `ubuntu-latest`, `macos-latest`, `windows-latest` |
 
 Everything we run is arm64 (kw and OKE are arm64), so **default to arm64**.
 Do not request `linux/amd64` images unless a consumer actually needs them.
@@ -24,21 +24,40 @@ Fork-safe pattern for public repos (never hand a fork PR a privileged LAN runner
 
 ```yaml
 runs-on: ${{ (github.event_name != 'pull_request' ||
-              github.event.pull_request.head.repo.full_name == github.repository)
-             && 'arc-azrtydxb' || 'ubuntu-latest' }}
+  github.event.pull_request.head.repo.full_name == github.repository)
+  && 'arc-azrtydxb' || 'ubuntu-latest' }}
 ```
+
+## Package and image mirrors (Kuvryn Ant)
+
+Runners pull through Kuvryn Ant (`https://ant.azrty.com`), not Nexus. dind mirrors
+Docker Hub through Ant; other registries are pulled by prefixed name
+(`ant.azrty.com/ghcr/...`, `ant.azrty.com/dockerhub/...`). Go, cargo, pip/uv (and npm,
+opt-in) are configured per job by `azrtydxb/ant-setup-action`, which exchanges the job's
+GitHub OIDC token for a short-lived Ant token, so no secret is stored:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+steps:
+  - uses: actions/checkout@<sha>
+  - uses: azrtydxb/ant-setup-action@<sha> # v1  (docker-login: "true" to push to ant.azrty.com/oci-hosted/...)
+```
+
+`main`, `master` and `v*` tags get publish on `oci-hosted`; every other ref is read-only.
 
 ## Reusable workflows
 
-| Workflow | Language | Key inputs |
-| --- | --- | --- |
-| `reusable-go.yml` | Go | `working-directory`, `tier`, `race`, `lint` |
-| `reusable-node.yml` | Node/TS | `working-directory`, `tier`, `node-version`, `package-manager` |
-| `reusable-rust.yml` | Rust | `working-directory`, `tier`, `clippy` |
-| `reusable-python.yml` | Python | `working-directory`, `tier`, `python-version`, `install` |
-| `reusable-docker-publish.yml` | images | `image`, `context`, `target`, `platforms` |
-| `reusable-security.yml` | any | `runner` |
-| `reusable-dependabot-automerge.yml` | any | `merge-method`, `allow-major` |
+| Workflow                            | Language | Key inputs                                                     |
+| ----------------------------------- | -------- | -------------------------------------------------------------- |
+| `reusable-go.yml`                   | Go       | `working-directory`, `tier`, `race`, `lint`                    |
+| `reusable-node.yml`                 | Node/TS  | `working-directory`, `tier`, `node-version`, `package-manager` |
+| `reusable-rust.yml`                 | Rust     | `working-directory`, `tier`, `clippy`                          |
+| `reusable-python.yml`               | Python   | `working-directory`, `tier`, `python-version`, `install`       |
+| `reusable-docker-publish.yml`       | images   | `image`, `context`, `target`, `platforms`                      |
+| `reusable-security.yml`             | any      | `runner`                                                       |
+| `reusable-dependabot-automerge.yml` | any      | `merge-method`, `allow-major`                                  |
 
 Reference them at `@main`:
 
@@ -52,11 +71,11 @@ Every repo splits its tests into **three tiers by trigger**, not one big job on
 every push. The PR gate must stay **under 5 minutes**; anything slower moves to a
 nightly or release trigger.
 
-| Tier | Trigger | What runs | Budget |
-| --- | --- | --- | --- |
-| `unit` | `pull_request`, `push` to main | fmt/lint/typecheck + **hermetic** unit tests. No containers, browsers, network, kind, or e2e. | **< 5 min** |
-| `integration` | `schedule` (nightly) | unit + tests that need services (db, containers, kind, testcontainers). | < 30 min |
-| `full` | `push` tag `v*` (release) | integration + e2e/playwright + race + coverage + full matrix. | no hard cap |
+| Tier          | Trigger                        | What runs                                                                                     | Budget      |
+| ------------- | ------------------------------ | --------------------------------------------------------------------------------------------- | ----------- |
+| `unit`        | `pull_request`, `push` to main | fmt/lint/typecheck + **hermetic** unit tests. No containers, browsers, network, kind, or e2e. | **< 5 min** |
+| `integration` | `schedule` (nightly)           | unit + tests that need services (db, containers, kind, testcontainers).                       | < 30 min    |
+| `full`        | `push` tag `v*` (release)      | integration + e2e/playwright + race + coverage + full matrix.                                 | no hard cap |
 
 Caller files (copy from `templates/`):
 
@@ -69,12 +88,12 @@ Caller files (copy from `templates/`):
 The reusable workflows select the tier; the repo must actually keep the tiers
 apart, or the PR run still drags the slow tests in.
 
-| Language | unit | integration |
-| --- | --- | --- |
-| Go | default build; integration tests behind `//go:build integration` | `go test -tags integration ./...` |
-| Node | `npm test` | `npm run test:integration`, e2e in `test:e2e` |
-| Rust | `cargo test`; slow tests `#[ignore]` or behind the `integration` feature | `cargo test --all-features` |
-| Python | `pytest -m "not integration and not e2e"` | `@pytest.mark.integration`, e2e `@pytest.mark.e2e` |
+| Language | unit                                                                     | integration                                        |
+| -------- | ------------------------------------------------------------------------ | -------------------------------------------------- |
+| Go       | default build; integration tests behind `//go:build integration`         | `go test -tags integration ./...`                  |
+| Node     | `npm test`                                                               | `npm run test:integration`, e2e in `test:e2e`      |
+| Rust     | `cargo test`; slow tests `#[ignore]` or behind the `integration` feature | `cargo test --all-features`                        |
+| Python   | `pytest -m "not integration and not e2e"`                                | `@pytest.mark.integration`, e2e `@pytest.mark.e2e` |
 
 **Rule:** if a PR job exceeds 5 minutes, either (a) split it into parallel jobs,
 (b) move the slow part down a tier, or (c) both. Never gate merges on tests that
