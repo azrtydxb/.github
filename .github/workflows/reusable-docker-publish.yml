@@ -1,8 +1,8 @@
 # Reusable image build/push to Kuvryn Ant (ant.azrty.com/oci-hosted) — the azrtydxb standard.
 #
 # Runs on the arm64 publish set (everything we deploy is arm64). Base images are
-# pulled through the Kuvryn Ant mirror and layers are cached in oci-hosted, so an
-# ephemeral runner never starts a cold build. kw replicates oci-hosted.
+# pulled through the Kuvryn Ant mirror and layers are cached on the Kuvryn Ant buildcache feed
+# (via ant-setup-action build-cache), so an ephemeral runner never starts a cold build. kw replicates oci-hosted.
 #
 # Login is GitHub OIDC through azrtydxb/ant-setup-action: no stored secret. The
 # caller must grant `permissions: id-token: write` (main, master and v* tags get a
@@ -82,8 +82,12 @@ jobs:
             [registry."docker.io"]
               mirrors = ["ant.azrty.com"]
 
-      - uses: azrtydxb/ant-setup-action@7c6f1b8ca34a0a127b43040f4e16bbafdbd83791 # v1
+      - id: ant
+        uses: azrtydxb/ant-setup-action@549f7472cf26b0885441ed9f9a7fab0277545000 # v1
         with:
+          build-cache: "true"
+          cache-name: ${{ inputs.image }}
+          cache-write: ${{ inputs.push && github.event_name == 'push' }}
           docker-login: "true"
           required: ${{ inputs.push && github.event_name == 'push' }}
           go: "false"
@@ -104,5 +108,5 @@ jobs:
           push: ${{ inputs.push && github.event_name == 'push' }}
           tags: |
             ${{ env.REGISTRY }}/${{ inputs.image }}:sha-${{ github.sha }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/buildcache/${{ inputs.image }}:arm64
-          cache-to: ${{ inputs.push && github.event_name == 'push' && format('type=registry,ref={0}/buildcache/{1}:arm64,mode=max,image-manifest=true,ignore-error=true', env.REGISTRY, inputs.image) || '' }}
+          cache-from: ${{ steps.ant.outputs.cache-from }}
+          cache-to: ${{ steps.ant.outputs.cache-to }}
