@@ -32,8 +32,7 @@ runs-on: ${{ (github.event_name != 'pull_request' ||
 
 Runners pull through Kuvryn Ant (`https://ant.azrty.com`), not Nexus. dind mirrors
 Docker Hub through Ant; other registries are pulled by prefixed name
-(`ant.azrty.com/ghcr/...`, `ant.azrty.com/dockerhub/...`). Go, cargo, pip/uv (and npm,
-opt-in) are configured per job by `azrtydxb/ant-setup-action`, which exchanges the job's
+(`ant.azrty.com/ghcr/...`, `ant.azrty.com/dockerhub/...`). Go, npm/pnpm, cargo and pip/uv are configured per job by `azrtydxb/ant-setup-action`, which exchanges the job's
 GitHub OIDC token for a short-lived Ant token, so no secret is stored:
 
 ```yaml
@@ -46,6 +45,10 @@ steps:
 ```
 
 `main`, `master` and `v*` tags get publish on `oci-hosted`; every other ref is read-only.
+
+The reusable Go, Node, Python and Rust workflows already run the action, so their callers
+must grant `id-token: write` (next to `contents: read`) or the called workflow will not start.
+Maven, NuGet, Composer, RubyGems and SwiftPM are not configured by the action.
 
 ## Reusable workflows
 

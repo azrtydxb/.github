@@ -49,6 +49,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # Kuvryn Ant OIDC (azrtydxb/ant-setup-action)
 
 jobs:
   node:
@@ -59,6 +60,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azrtydxb/ant-setup-action@7c6f1b8ca34a0a127b43040f4e16bbafdbd83791 # v1
 
       - name: Enable pnpm
         if: ${{ inputs.package-manager == 'pnpm' }}
