@@ -1,10 +1,12 @@
-# Reusable image build/push to the Nexus registry — the azrtydxb standard.
+# Reusable image build/push to Kuvryn Ant (ant.azrty.com/oci-hosted) — the azrtydxb standard.
 #
 # Runs on the arm64 publish set (everything we deploy is arm64). Base images are
-# pulled through the home registry mirror and layers are cached in Nexus, so an
-# ephemeral runner never starts a cold build.
+# pulled through the Kuvryn Ant mirror and layers are cached in oci-hosted, so an
+# ephemeral runner never starts a cold build. kw replicates oci-hosted.
 #
-# Callers must pass the registry credentials: `secrets: inherit`.
+# Login is GitHub OIDC through azrtydxb/ant-setup-action: no stored secret. The
+# caller must grant `permissions: id-token: write` (main, master and v* tags get a
+# publish token, other refs read-only).
 name: reusable-docker-publish
 
 on:
@@ -47,16 +49,19 @@ on:
         type: number
         default: 30
     secrets:
+      # Deprecated and unused (the Nexus login is gone); kept optional so existing
+      # callers that pass them do not break.
       NEXUS_USER:
-        required: true
+        required: false
       NEXUS_PASSWORD:
-        required: true
+        required: false
 
 permissions:
   contents: read
+  id-token: write
 
 env:
-  REGISTRY: 192.168.10.131:5000
+  REGISTRY: ant.azrty.com/oci-hosted
 
 jobs:
   publish:
@@ -65,9 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # BuildKit runs in its own container and does not inherit the host trust
-      # store: both Nexus ports need the insecure exemption, and Docker Hub is
-      # reached through the mirror, never anonymously.
+      # Docker Hub is reached through the Kuvryn Ant mirror, never anonymously.
+      # The 192.168.10.131 entries only matter for base images still named there.
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           buildkitd-config-inline: |
@@ -78,11 +82,13 @@ jobs:
             [registry."docker.io"]
               mirrors = ["ant.azrty.com"]
 
-      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      - uses: azrtydxb/ant-setup-action@543d780ae8e4ff1fe0473a4778f18edceb995768 # v1
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.NEXUS_USER }}
-          password: ${{ secrets.NEXUS_PASSWORD }}
+          docker-login: "true"
+          required: ${{ inputs.push && github.event_name == 'push' }}
+          go: "false"
+          cargo: "false"
+          pip: "false"
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -98,6 +104,5 @@ jobs:
           push: ${{ inputs.push && github.event_name == 'push' }}
           tags: |
             ${{ env.REGISTRY }}/${{ inputs.image }}:sha-${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ inputs.image }}:main
           cache-from: type=registry,ref=${{ env.REGISTRY }}/buildcache/${{ inputs.image }}:arm64
           cache-to: ${{ inputs.push && github.event_name == 'push' && format('type=registry,ref={0}/buildcache/{1}:arm64,mode=max,image-manifest=true,ignore-error=true', env.REGISTRY, inputs.image) || '' }}
