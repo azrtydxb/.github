@@ -1,16 +1,25 @@
-# Docker buildx on the shared in-cluster BuildKit, for jobs on the ARC kubernetes-mode
-# runners (arc-azrtydxb-k8s, arc-azrtydxb-amd64-k8s), which have no Docker daemon.
+# Docker buildx on the runner pod's own rootless BuildKit, for jobs on the ARC runners
+# (arc-azrtydxb, arc-azrtydxb-amd64) without a `container:`. Each runner pod has a
+# BuildKit sidecar at unix:///run/buildkit/buildkitd.sock next to its dind daemon
+# (azrty-infra oci/runners/arc/runners-common.yaml); there is no shared or always-on
+# builder.
 #
-# Creates one buildx builder with the `remote` driver and a node per architecture:
-# linux/arm64 on buildkitd-arm64 and linux/amd64 on buildkitd-amd64 (namespace
-# buildkit on azrty-oke, azrty-infra platform/buildkit). Multi-platform builds run
-# natively on both daemons, without QEMU. Both are reached over mTLS with the runners'
-# client certificate, mounted at /etc/buildkit-client by the scale set.
+# By default the builder has one node, the sidecar, for the runner's own platform
+# (linux/arm64 on arc-azrtydxb, linux/amd64 on arc-azrtydxb-amd64). `platforms` can add
+# the other one: for each platform that is not the runner's, the action starts an
+# ephemeral rootless BuildKit pod on that architecture's runner pool (pod template
+# builder-<arch>.yaml from ConfigMap arc-k8s-config, mounted at /home/runner/k8s-config)
+# and appends it as a node, reached through `kubectl exec` (remote driver, kube-pod://).
+# The pod is owned by the runner pod, so Kubernetes deletes it with the runner at the
+# end of the job. It may have to wait for a node of that pool to boot (3 to 6 minutes).
+# The per-arch matrix (each platform on its own runner, joined with
+# `docker buildx imagetools create`) avoids that wait and stays the preferred pattern.
 #
-# Follow it with azrtydxb/ant-setup-action (docker-login, build-cache, and an explicit
-# `arch-suffix`, since the runner's own arch says nothing about the build's) and
-# docker/build-push-action. Images are pushed by BuildKit with the credentials the
-# docker CLI holds, so `docker login` must run in the job.
+# BuildKit's local store lives only as long as the job: follow this with
+# azrtydxb/ant-setup-action (docker-login, build-cache, and an explicit `arch-suffix`,
+# the image's arch rather than the runner's) and docker/build-push-action with its
+# cache-from/cache-to, so the cache is Ant's. Images are pushed by BuildKit with the
+# credentials the docker CLI holds, so `docker login` must run in the job.
 #
 # Registry cache and multi-platform builds: each node exports its own cache to the
 # cache-to ref, so with both platforms in one build the last node to finish overwrites
@@ -18,24 +27,29 @@
 # build-push-action step with its own cache ref (push by digest), then join the digests
 # with `docker buildx imagetools create`.
 name: setup-builder
-description: Docker buildx builder on the shared in-cluster BuildKit (arm64 + amd64, mTLS).
+description: Docker buildx builder on the runner pod's BuildKit sidecar (plus an ephemeral builder for the other arch on request).
 
 inputs:
+  platforms:
+    description: >-
+      Platforms to build for, comma-separated (linux/arm64, linux/amd64). Default: the
+      runner's own platform only.
+    default: ""
   arm64:
-    description: Add the linux/arm64 node (buildkitd-arm64).
-    default: "true"
+    description: Deprecated, use `platforms`. "true" adds linux/arm64 when `platforms` is empty.
+    default: ""
   amd64:
-    description: Add the linux/amd64 node (buildkitd-amd64).
-    default: "true"
-  arm64-endpoint:
-    description: BuildKit endpoint for linux/arm64.
-    default: tcp://buildkitd-arm64.buildkit.svc.cluster.local:1234
-  amd64-endpoint:
-    description: BuildKit endpoint for linux/amd64.
-    default: tcp://buildkitd-amd64.buildkit.svc.cluster.local:1234
-  cert-dir:
-    description: Directory with the mTLS client files ca.crt, tls.crt and tls.key.
-    default: /etc/buildkit-client
+    description: Deprecated, use `platforms`. "true" adds linux/amd64 when `platforms` is empty.
+    default: ""
+  endpoint:
+    description: BuildKit endpoint of the runner pod's sidecar.
+    default: unix:///run/buildkit/buildkitd.sock
+  template-dir:
+    description: Directory with the ephemeral builder pod templates builder-<arch>.yaml.
+    default: /home/runner/k8s-config
+  timeout:
+    description: Seconds to wait for an ephemeral builder pod (node boot included).
+    default: "600"
   name:
     description: Builder name.
     default: incluster
@@ -55,39 +69,105 @@ runs:
       id: plan
       shell: bash
       env:
+        PLATFORMS: ${{ inputs.platforms }}
         ARM64: ${{ inputs.arm64 }}
         AMD64: ${{ inputs.amd64 }}
-        ARM64_ENDPOINT: ${{ inputs.arm64-endpoint }}
-        AMD64_ENDPOINT: ${{ inputs.amd64-endpoint }}
-        CERT_DIR: ${{ inputs.cert-dir }}
+        ENDPOINT: ${{ inputs.endpoint }}
+        TEMPLATE_DIR: ${{ inputs.template-dir }}
+        TIMEOUT: ${{ inputs.timeout }}
         NAME: ${{ inputs.name }}
+        # kubectl for the kube-pod:// endpoints (buildctl dial-stdio over kubectl exec).
+        KUBECTL_VERSION: v1.36.4
+        KUBECTL_SHA256_ARM64: 0ecf44450ee6063bf19dd166a103ee6df4a9034455c2abce626e6eea657d73fb
+        KUBECTL_SHA256_AMD64: 8b8f088da2dab964f853b38464033b1be15ede2839eca751482357c45abdd05a
       run: |
         set -euo pipefail
-        for f in ca.crt tls.crt tls.key; do
-          if [ ! -r "$CERT_DIR/$f" ]; then
-            echo "::error::$CERT_DIR/$f not found: setup-builder needs an ARC kubernetes-mode runner (runs-on: arc-azrtydxb-k8s or arc-azrtydxb-amd64-k8s) without a job container, or one that mounts the buildkit client certs."
-            exit 1
-          fi
-        done
-        opts="cacert=$CERT_DIR/ca.crt,cert=$CERT_DIR/tls.crt,key=$CERT_DIR/tls.key"
-        # The first node is the builder's own; any second one goes through `append`.
-        nodes=()
-        [ "$ARM64" = "true" ] && nodes+=("$NAME-arm64|$ARM64_ENDPOINT|linux/arm64")
-        [ "$AMD64" = "true" ] && nodes+=("$NAME-amd64|$AMD64_ENDPOINT|linux/amd64")
-        if [ "${#nodes[@]}" -eq 0 ]; then
-          echo "::error::setup-builder: enable at least one of arm64 and amd64."
+        case "$(uname -m)" in
+          aarch64 | arm64) native=arm64 ;;
+          x86_64 | amd64) native=amd64 ;;
+          *) echo "::error::setup-builder: unsupported machine $(uname -m)"; exit 1 ;;
+        esac
+        sock=${ENDPOINT#unix://}
+        if [ "$sock" != "$ENDPOINT" ] && [ ! -S "$sock" ]; then
+          echo "::error::$sock not found: setup-builder needs an ARC runner (runs-on: arc-azrtydxb or arc-azrtydxb-amd64) and a job without \`container:\`."
           exit 1
         fi
+
+        # Wanted architectures, the native one first.
+        want=()
+        if [ -n "$PLATFORMS" ]; then
+          for p in ${PLATFORMS//,/ }; do
+            case "$p" in
+              linux/arm64 | linux/arm64/*) want+=(arm64) ;;
+              linux/amd64 | linux/amd64/*) want+=(amd64) ;;
+              *) echo "::error::setup-builder: unsupported platform $p (linux/arm64, linux/amd64)"; exit 1 ;;
+            esac
+          done
+        else
+          [ "$ARM64" = "true" ] && want+=(arm64)
+          [ "$AMD64" = "true" ] && want+=(amd64)
+        fi
+        [ "${#want[@]}" -eq 0 ] && want=("$native")
+        archs=()
+        printf '%s\n' "${want[@]}" | grep -qx "$native" && archs+=("$native")
+        for a in arm64 amd64; do
+          [ "$a" != "$native" ] && printf '%s\n' "${want[@]}" | grep -qx "$a" && archs+=("$a")
+        done
+
+        nodes=()
+        for a in "${archs[@]}"; do
+          if [ "$a" = "$native" ]; then
+            nodes+=("$NAME-$a|$ENDPOINT|linux/$a")
+            continue
+          fi
+          # Ephemeral builder on the other pool, owned by this runner pod.
+          tmpl=$TEMPLATE_DIR/builder-$a.yaml
+          if [ ! -r "$tmpl" ] || [ -z "${ACTIONS_RUNNER_POD_NAME:-}" ]; then
+            echo "::error::setup-builder: no $tmpl or ACTIONS_RUNNER_POD_NAME: linux/$a needs an ARC runner of azrty-oke (or build it on a linux/$a runner)."
+            exit 1
+          fi
+          bin=$RUNNER_TEMP/setup-builder-bin
+          if [ ! -x "$bin/kubectl" ]; then
+            mkdir -p "$bin"
+            sum=KUBECTL_SHA256_${native^^}
+            curl -fsSL --retry 3 -o "$bin/kubectl" "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$native/kubectl"
+            echo "${!sum}  $bin/kubectl" | sha256sum -c --quiet
+            chmod +x "$bin/kubectl"
+            echo "$bin" >>"$GITHUB_PATH"
+          fi
+          k=$bin/kubectl
+          ns=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+          uid=$("$k" -n "$ns" get pod "$ACTIONS_RUNNER_POD_NAME" -o jsonpath='{.metadata.uid}')
+          pod=$(echo "bk-$a-$ACTIONS_RUNNER_POD_NAME" | cut -c1-63 | sed 's/-*$//')
+          patch=$(jq -cn --arg pod "$pod" --arg owner "$ACTIONS_RUNNER_POD_NAME" --arg uid "$uid" --arg ns "$ns" \
+            '{metadata: {name: $pod, namespace: $ns, labels: {"actions.github.com/runner-pod": $owner},
+              ownerReferences: [{apiVersion: "v1", kind: "Pod", name: $owner, uid: $uid}]}}')
+          "$k" -n "$ns" delete pod "$pod" --ignore-not-found --wait=true >/dev/null
+          "$k" patch --local -f "$tmpl" --type merge -p "$patch" -o json | "$k" create -f - >/dev/null
+          echo "Waiting for linux/$a builder pod $pod (up to ${TIMEOUT}s)"
+          deadline=$((SECONDS + TIMEOUT))
+          until [ "$("$k" -n "$ns" get pod "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]; do
+            phase=$("$k" -n "$ns" get pod "$pod" -o jsonpath='{.status.phase}')
+            if [ "$phase" = Failed ] || [ $SECONDS -ge $deadline ]; then
+              echo "::error::setup-builder: linux/$a builder pod $pod not ready (phase $phase)"
+              "$k" -n "$ns" describe pod "$pod" | tail -n 20 || :
+              exit 1
+            fi
+            sleep 5
+          done
+          nodes+=("$NAME-$a|kube-pod://$pod?namespace=$ns&container=buildkitd|linux/$a")
+        done
+
+        # The first node is the builder's own; the others go through `append`.
         IFS='|' read -r n e p <<<"${nodes[0]}"
         {
           echo "endpoint=$e"
           echo "platforms=$p"
-          echo "driver-opts=$opts"
           echo "append<<APPEND"
-          if [ "${#nodes[@]}" -gt 1 ]; then
-            IFS='|' read -r n e p <<<"${nodes[1]}"
-            printf -- '- name: %s\n  endpoint: %s\n  platforms: %s\n  driver-opts:\n    - %s\n' "$n" "$e" "$p" "$opts"
-          fi
+          for node in "${nodes[@]:1}"; do
+            IFS='|' read -r n e p <<<"$node"
+            printf -- '- name: %s\n  endpoint: %s\n  platforms: %s\n' "$n" "$e" "$p"
+          done
           echo "APPEND"
         } >>"$GITHUB_OUTPUT"
 
@@ -99,6 +179,5 @@ runs:
         driver: remote
         endpoint: ${{ steps.plan.outputs.endpoint }}
         platforms: ${{ steps.plan.outputs.platforms }}
-        driver-opts: ${{ steps.plan.outputs.driver-opts }}
         append: ${{ steps.plan.outputs.append }}
         use: true
