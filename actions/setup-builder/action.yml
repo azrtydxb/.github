@@ -11,6 +11,12 @@
 # `arch-suffix`, since the runner's own arch says nothing about the build's) and
 # docker/build-push-action. Images are pushed by BuildKit with the credentials the
 # docker CLI holds, so `docker login` must run in the job.
+#
+# Registry cache and multi-platform builds: each node exports its own cache to the
+# cache-to ref, so with both platforms in one build the last node to finish overwrites
+# the other's cache. Keep one platform per cache ref: build each platform in its own
+# build-push-action step with its own cache ref (push by digest), then join the digests
+# with `docker buildx imagetools create`.
 name: setup-builder
 description: Docker buildx builder on the shared in-cluster BuildKit (arm64 + amd64, mTLS).
 
