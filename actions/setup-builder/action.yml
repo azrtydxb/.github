@@ -1,0 +1,104 @@
+# Docker buildx on the shared in-cluster BuildKit, for jobs on the ARC kubernetes-mode
+# runners (arc-azrtydxb-k8s, arc-azrtydxb-amd64-k8s), which have no Docker daemon.
+#
+# Creates one buildx builder with the `remote` driver and a node per architecture:
+# linux/arm64 on buildkitd-arm64 and linux/amd64 on buildkitd-amd64 (namespace
+# buildkit on azrty-oke, azrty-infra platform/buildkit). Multi-platform builds run
+# natively on both daemons, without QEMU. Both are reached over mTLS with the runners'
+# client certificate, mounted at /etc/buildkit-client by the scale set.
+#
+# Follow it with azrtydxb/ant-setup-action (docker-login, build-cache, and an explicit
+# `arch-suffix`, since the runner's own arch says nothing about the build's) and
+# docker/build-push-action. Images are pushed by BuildKit with the credentials the
+# docker CLI holds, so `docker login` must run in the job.
+#
+# Registry cache and multi-platform builds: each node exports its own cache to the
+# cache-to ref, so with both platforms in one build the last node to finish overwrites
+# the other's cache. Keep one platform per cache ref: build each platform in its own
+# build-push-action step with its own cache ref (push by digest), then join the digests
+# with `docker buildx imagetools create`.
+name: setup-builder
+description: Docker buildx builder on the shared in-cluster BuildKit (arm64 + amd64, mTLS).
+
+inputs:
+  arm64:
+    description: Add the linux/arm64 node (buildkitd-arm64).
+    default: "true"
+  amd64:
+    description: Add the linux/amd64 node (buildkitd-amd64).
+    default: "true"
+  arm64-endpoint:
+    description: BuildKit endpoint for linux/arm64.
+    default: tcp://buildkitd-arm64.buildkit.svc.cluster.local:1234
+  amd64-endpoint:
+    description: BuildKit endpoint for linux/amd64.
+    default: tcp://buildkitd-amd64.buildkit.svc.cluster.local:1234
+  cert-dir:
+    description: Directory with the mTLS client files ca.crt, tls.crt and tls.key.
+    default: /etc/buildkit-client
+  name:
+    description: Builder name.
+    default: incluster
+
+outputs:
+  name:
+    description: Builder name.
+    value: ${{ steps.buildx.outputs.name }}
+  platforms:
+    description: Platforms the builder serves.
+    value: ${{ steps.buildx.outputs.platforms }}
+
+runs:
+  using: composite
+  steps:
+    - name: Plan builder nodes
+      id: plan
+      shell: bash
+      env:
+        ARM64: ${{ inputs.arm64 }}
+        AMD64: ${{ inputs.amd64 }}
+        ARM64_ENDPOINT: ${{ inputs.arm64-endpoint }}
+        AMD64_ENDPOINT: ${{ inputs.amd64-endpoint }}
+        CERT_DIR: ${{ inputs.cert-dir }}
+        NAME: ${{ inputs.name }}
+      run: |
+        set -euo pipefail
+        for f in ca.crt tls.crt tls.key; do
+          if [ ! -r "$CERT_DIR/$f" ]; then
+            echo "::error::$CERT_DIR/$f not found: setup-builder needs an ARC kubernetes-mode runner (runs-on: arc-azrtydxb-k8s or arc-azrtydxb-amd64-k8s) without a job container, or one that mounts the buildkit client certs."
+            exit 1
+          fi
+        done
+        opts="cacert=$CERT_DIR/ca.crt,cert=$CERT_DIR/tls.crt,key=$CERT_DIR/tls.key"
+        # The first node is the builder's own; any second one goes through `append`.
+        nodes=()
+        [ "$ARM64" = "true" ] && nodes+=("$NAME-arm64|$ARM64_ENDPOINT|linux/arm64")
+        [ "$AMD64" = "true" ] && nodes+=("$NAME-amd64|$AMD64_ENDPOINT|linux/amd64")
+        if [ "${#nodes[@]}" -eq 0 ]; then
+          echo "::error::setup-builder: enable at least one of arm64 and amd64."
+          exit 1
+        fi
+        IFS='|' read -r n e p <<<"${nodes[0]}"
+        {
+          echo "endpoint=$e"
+          echo "platforms=$p"
+          echo "driver-opts=$opts"
+          echo "append<<APPEND"
+          if [ "${#nodes[@]}" -gt 1 ]; then
+            IFS='|' read -r n e p <<<"${nodes[1]}"
+            printf -- '- name: %s\n  endpoint: %s\n  platforms: %s\n  driver-opts:\n    - %s\n' "$n" "$e" "$p" "$opts"
+          fi
+          echo "APPEND"
+        } >>"$GITHUB_OUTPUT"
+
+    - name: Set up buildx (remote driver)
+      id: buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      with:
+        name: ${{ inputs.name }}
+        driver: remote
+        endpoint: ${{ steps.plan.outputs.endpoint }}
+        platforms: ${{ steps.plan.outputs.platforms }}
+        driver-opts: ${{ steps.plan.outputs.driver-opts }}
+        append: ${{ steps.plan.outputs.append }}
+        use: true
