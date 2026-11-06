@@ -62,6 +62,17 @@ jobs:
       - uses: actions/checkout@v7
       - uses: azrtydxb/ant-setup-action@v1
 
+      # The self-hosted runner image (ghcr.io/actions/actions-runner, used on quadronix for
+      # private repos) lacks libatomic1, which pnpm's and Node's standalone binaries need
+      # (libatomic.so.1: cannot open shared object file). ubuntu-latest has it.
+      - name: libatomic1 (self-hosted)
+        if: ${{ runner.environment == 'self-hosted' }}
+        working-directory: .
+        run: |
+          if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends libatomic1 >/dev/null
+          fi
+
       - name: Enable pnpm
         if: ${{ inputs.package-manager == 'pnpm' }}
         uses: pnpm/action-setup@v6
