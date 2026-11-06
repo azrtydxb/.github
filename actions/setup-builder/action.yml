@@ -186,7 +186,7 @@ runs:
 
     - name: Set up buildx (remote driver)
       id: buildx
-      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      uses: docker/setup-buildx-action@v4
       with:
         name: ${{ inputs.name }}
         driver: remote

@@ -64,10 +64,10 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: azrtydxb/ant-setup-action@7c6f1b8ca34a0a127b43040f4e16bbafdbd83791 # v1
+      - uses: actions/checkout@v7
+      - uses: azrtydxb/ant-setup-action@v1
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
           cache: true
@@ -85,7 +85,7 @@ jobs:
 
       - name: golangci-lint
         if: ${{ inputs.lint }}
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        uses: golangci/golangci-lint-action@v9
         with:
           working-directory: ${{ inputs.working-directory }}
 
@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload coverage
         if: ${{ inputs.tier == 'full' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: ${{ inputs.working-directory }}/coverage.out
