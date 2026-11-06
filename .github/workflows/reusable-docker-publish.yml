@@ -1,6 +1,10 @@
 # Reusable image build/push to Kuvryn Ant (ant.azrty.com/oci-hosted) — the azrtydxb standard.
 #
-# Runs on the arm64 publish set (everything we deploy is arm64). Base images are
+# One job builds linux/amd64 and linux/arm64 together on the amd64 runner (private repos:
+# quadronix `arc-azrtydxb-amd64`, public repos: GitHub-hosted `ubuntu-latest`). arm64 is
+# cross-compiled, never emulated: the Dockerfile's build stages must be
+# `FROM --platform=$BUILDPLATFORM` and its final stage must have no `RUN`. There is no
+# QEMU/binfmt step here. Base images are
 # pulled through the Kuvryn Ant mirror and layers are cached on the Kuvryn Ant buildcache feed
 # (via ant-setup-action build-cache), so an ephemeral runner never starts a cold build. kw replicates oci-hosted.
 #
@@ -13,9 +17,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Publish runner label.
+        description: Runner label override. Empty (default) picks by caller visibility, arc-azrtydxb-amd64 (quadronix) for private repos and ubuntu-latest (GitHub-hosted) for public ones.
         type: string
-        default: arc-azrtydxb
+        default: ""
       image:
         description: Image name under the registry, e.g. azrtydxb/novamail-web.
         type: string
@@ -33,9 +37,9 @@ on:
         type: string
         default: ""
       platforms:
-        description: Target platforms. Default is arm64-only; add linux/amd64 only if a consumer needs it.
+        description: Target platforms, built in one job by cross-compilation (no QEMU). Dockerfile build stages must be FROM --platform=$BUILDPLATFORM and the final stage must have no RUN.
         type: string
-        default: linux/arm64
+        default: linux/amd64,linux/arm64
       build-args:
         description: Newline-separated build args.
         type: string
@@ -65,7 +69,7 @@ env:
 
 jobs:
   publish:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner != '' && inputs.runner || (github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest') }}
     timeout-minutes: ${{ inputs.timeout }}
     steps:
       - uses: actions/checkout@v7

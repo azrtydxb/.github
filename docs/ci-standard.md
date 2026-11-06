@@ -6,27 +6,46 @@ us with 9 runner labels, 4 action-pinning styles and almost no shared caching.
 
 ## Runner labels (the only ones allowed)
 
-| Use                                                         | Label                                             |
-| ----------------------------------------------------------- | ------------------------------------------------- |
-| Linux CI, containers, image build **and push**, **default** | `arc-azrtydxb` (arm64)                            |
-| Linux CI or image builds that must be x86                   | `arc-azrtydxb-amd64`                              |
-| Untrusted fork PRs / macOS/Windows                          | `ubuntu-latest`, `macos-latest`, `windows-latest` |
+Decided 2026-11-06: the runner follows the repo's visibility.
 
-Everything we run is arm64 (kw and OKE are arm64), so **default to arm64**.
-Do not request `linux/amd64` images unless a consumer actually needs them.
+| Repo                      | Use                                         | Label                                              |
+| ------------------------- | ------------------------------------------- | -------------------------------------------------- |
+| **Public**                | Linux CI, image build and push              | `ubuntu-latest` (GitHub-hosted, amd64)             |
+| **Public**                | Native arm64 tests (not image builds)       | `ubuntu-24.04-arm` (GitHub-hosted)                 |
+| **Private**               | Everything on Linux                         | `arc-azrtydxb-amd64` (ARC on quadronix, amd64)     |
+| Either                    | macOS / Windows jobs that need those OSes   | `macos-latest`, `windows-latest`                   |
 
-**Retired:** `arc-azrtydxb-publish`, `arc-azrtydxb-amd64-publish` (merged into the
-unified sets above, which run CI, CD and pushes from the same endpoint), `qnap-nas`, `novanas-amd64`, `[self-hosted, zfs]`,
-`[self-hosted, nvidia, gpu]`, `[self-hosted, novaflow-prod]`. They are not in the
-org runner inventory; jobs that ask for them never start.
+Public repos never use a self-hosted label. Private repos never use `ubuntu-*` or the
+arm64 OKE set `arc-azrtydxb`. The reusable workflows pick the label for you from the
+caller's visibility when their `runner` input is empty (the default); pass `runner` only
+to override.
 
-Fork-safe pattern for public repos (never hand a fork PR a privileged LAN runner):
+**arm64 is cross-compiled, never emulated.** No `docker/setup-qemu-action`, no
+`tonistiigi/binfmt`, no `qemu-user-static`. Build `linux/amd64,linux/arm64` together in
+one job on the amd64 runner:
 
-```yaml
-runs-on: ${{ (github.event_name != 'pull_request' ||
-  github.event.pull_request.head.repo.full_name == github.repository)
-  && 'arc-azrtydxb' || 'ubuntu-latest' }}
-```
+- every Dockerfile stage that has a `RUN` is `FROM --platform=$BUILDPLATFORM ...` with
+  `ARG TARGETOS TARGETARCH` (Go: `GOOS=$TARGETOS GOARCH=$TARGETARCH CGO_ENABLED=0`; Rust:
+  `cargo zigbuild` or a rustup target plus a cross linker, not `cross`, which uses QEMU);
+- the final (target-platform) stage has **no `RUN`**: only FROM/COPY/ENV/ARG/USER/WORKDIR/
+  EXPOSE/LABEL/ENTRYPOINT/CMD. Do apk/apt/adduser/mkdir/chmod in a `$BUILDPLATFORM`
+  stage and `COPY` the result;
+- arm64 tests cannot run on amd64 without emulation: private repos run amd64 tests and
+  keep only cross builds and vet (`GOARCH=arm64 go build ./...`); public repos may run
+  arm64 tests natively on `ubuntu-24.04-arm`.
+
+`actions/setup-builder` creates a per-arch native builder pod in the runner's cluster.
+Its arm64 builder pod template no longer exists on OKE, so **do not use it to get arm64**
+any more: cross-build instead. The action is left in place for amd64-only use on the ARC
+runners.
+
+**Retired:** `arc-azrtydxb` (arm64, OKE) for CI, `arc-azrtydxb-publish`,
+`arc-azrtydxb-amd64-publish`, `qnap-nas`, `novanas-amd64`, `[self-hosted, zfs]`,
+`[self-hosted, nvidia, gpu]`, `[self-hosted, novaflow-prod]`. Jobs that ask for them
+never start or sit on the wrong architecture.
+
+Fork PRs on public repos are safe by construction: they only ever run on GitHub-hosted
+runners, so the old fork-safe `runs-on` expression is no longer needed.
 
 ## Package and image mirrors (Kuvryn Ant)
 
@@ -126,7 +145,7 @@ jobs:
   gate:
     if: always()
     needs: [go]
-    runs-on: arc-azrtydxb
+    runs-on: ${{ github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest' }}
     steps:
       - run: |
           [ "${{ needs.go.result }}" = "success" ] || exit 1
