@@ -15,9 +15,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Runner label. Use arc-azrtydxb (arm64) unless x86 is required.
+        description: Runner label override. Empty (default) picks by caller visibility, arc-azrtydxb-amd64 (quadronix) for private repos and ubuntu-latest (GitHub-hosted) for public ones.
         type: string
-        default: arc-azrtydxb
+        default: ""
       working-directory:
         description: Directory holding package.json.
         type: string
@@ -53,7 +53,7 @@ permissions:
 
 jobs:
   node:
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner != '' && inputs.runner || (github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest') }}
     timeout-minutes: ${{ inputs.timeout }}
     defaults:
       run:

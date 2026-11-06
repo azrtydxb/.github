@@ -1,3 +1,10 @@
+# DEPRECATED for arm64 (2026-11-06 runner policy): the arm64 builder pod template
+# (builder-arm64.yaml) no longer exists on OKE, so `platforms: linux/arm64` on an amd64
+# runner fails. Do not use this action to get arm64. Cross-compile instead: one
+# docker/build-push-action step with `platforms: linux/amd64,linux/arm64` on a
+# `FROM --platform=$BUILDPLATFORM` Dockerfile, never QEMU. The action itself is left
+# as is for amd64 builds on the ARC runners.
+#
 # Docker buildx on the runner pod's own rootless BuildKit, for jobs on the ARC runners
 # (arc-azrtydxb, arc-azrtydxb-amd64) without a `container:`. Each runner pod has a
 # BuildKit sidecar at unix:///run/buildkit/buildkitd.sock next to its dind daemon

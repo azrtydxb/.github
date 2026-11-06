@@ -31,7 +31,7 @@ jobs:
   gate:
     if: always()
     needs: [go, security]
-    runs-on: arc-azrtydxb
+    runs-on: ${{ github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Verify

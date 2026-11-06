@@ -26,9 +26,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Keep this GitHub-hosted; the job is tiny and must not consume a LAN runner.
+        description: Runner label override. Empty (default) picks by caller visibility, arc-azrtydxb-amd64 (quadronix) for private repos and ubuntu-latest (GitHub-hosted) for public ones.
         type: string
-        default: ubuntu-latest
+        default: ""
       merge-method:
         description: squash | rebase | merge
         type: string
@@ -48,7 +48,7 @@ permissions:
 jobs:
   automerge:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner != '' && inputs.runner || (github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest') }}
     timeout-minutes: 5
     steps:
       - id: meta
