@@ -40,8 +40,8 @@ permissions:
   contents: read
   id-token: write
 steps:
-  - uses: actions/checkout@<sha>
-  - uses: azrtydxb/ant-setup-action@<sha> # v1  (docker-login: "true" to push to ant.azrty.com/oci-hosted/...)
+  - uses: actions/checkout@v7
+  - uses: azrtydxb/ant-setup-action@v1  # (docker-login: "true" to push to ant.azrty.com/oci-hosted/...)
 ```
 
 `main`, `master` and `v*` tags get publish on `oci-hosted`; every other ref is read-only.
@@ -143,10 +143,15 @@ This is already how `novamail`, `procoder` and `NovaFlow` work.
 
 ## Pinning policy
 
-- Third-party and first-party actions are pinned **by commit SHA** with a
-  `# vX.Y.Z` comment. Dependabot/Renovate keeps the comments current.
-- The one exception is a moving toolchain channel: `dtolnay/rust-toolchain@stable`.
-- `actions/create-github-app-token` bumps are pinned by SHA too.
+- Actions are referenced **by version tag**, third-party and first-party alike: the
+  project's major tag (`actions/checkout@v7`, `azrtydxb/ant-setup-action@v1`), or its
+  newest full release tag where it publishes no major tag. Minor and patch releases
+  then apply without a PR; Dependabot raises a PR for a new major.
+- No commit hashes, no branches. Exceptions: the org's own shared workflows and
+  actions in `azrtydxb/.github` (no release tags) use `@main`, and a moving
+  toolchain channel stays a channel (`dtolnay/rust-toolchain@stable`).
+- Decided 2026-11-06, replacing hash pinning: one release of a first-party action
+  meant a bump PR in every repo.
 
 ## Merge policy
 
