@@ -1,3 +1,5 @@
+# DEPRECATED (2026-11): BuildKit is gone from the quadronix runners' build path. Use
+# azrtydxb/image-build-action@v1 (Buildah via the podman sidecar) instead; see its README.
 # DEPRECATED for arm64 (2026-11-06 runner policy): the arm64 builder pod template
 # (builder-arm64.yaml) no longer exists on OKE, so `platforms: linux/arm64` on an amd64
 # runner fails. Do not use this action to get arm64. Cross-compile instead: one

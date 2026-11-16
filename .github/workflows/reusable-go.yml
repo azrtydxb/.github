@@ -70,7 +70,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ inputs.working-directory }}/${{ inputs.go-version-file }}
-          cache: true
+          # quadronix runners share a persistent GOCACHE/GOMODCACHE (env on the runner);
+          # only GitHub-hosted runners need the actions/setup-go cache.
+          cache: ${{ runner.environment == 'github-hosted' }}
           cache-dependency-path: ${{ inputs.working-directory }}/go.sum
 
       - name: gofmt
