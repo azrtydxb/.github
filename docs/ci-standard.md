@@ -34,10 +34,13 @@ one job on the amd64 runner:
   keep only cross builds and vet (`GOARCH=arm64 go build ./...`); public repos may run
   arm64 tests natively on `ubuntu-24.04-arm`.
 
-`actions/setup-builder` creates a per-arch native builder pod in the runner's cluster.
-Its arm64 builder pod template no longer exists on OKE, so **do not use it to get arm64**
-any more: cross-build instead. The action is left in place for amd64-only use on the ARC
-runners.
+Image builds on the quadronix runners use `azrtydxb/image-build-action@v1` (Buildah via the
+runner pod's podman sidecar; the runners' shared layer store is the cache, so no
+`cache-from`/`cache-to`). `reusable-docker-publish.yml` does this itself on quadronix and
+keeps BuildKit with the Ant registry cache on GitHub-hosted runners. `actions/setup-builder`
+(BuildKit) is deprecated: do not add new uses. The quadronix runners also provide a shared
+persistent Go cache (`GOCACHE`/`GOMODCACHE`), so jobs there need no Go cache steps and
+`actions/setup-go` runs with `cache: false`.
 
 **Retired:** `arc-azrtydxb` (arm64, OKE) for CI, `arc-azrtydxb-publish`,
 `arc-azrtydxb-amd64-publish`, `qnap-nas`, `novanas-amd64`, `[self-hosted, zfs]`,

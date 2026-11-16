@@ -4,9 +4,10 @@
 # quadronix `arc-azrtydxb-amd64`, public repos: GitHub-hosted `ubuntu-latest`). arm64 is
 # cross-compiled, never emulated: the Dockerfile's build stages must be
 # `FROM --platform=$BUILDPLATFORM` and its final stage must have no `RUN`. There is no
-# QEMU/binfmt step here. Base images are
-# pulled through the Kuvryn Ant mirror and layers are cached on the Kuvryn Ant buildcache feed
-# (via ant-setup-action build-cache), so an ephemeral runner never starts a cold build. kw replicates oci-hosted.
+# QEMU/binfmt step here. On quadronix the build is Buildah (azrtydxb/image-build-action,
+# the runners' shared layer store is the cache, base images come through the Ant mirror);
+# on GitHub-hosted runners it is BuildKit with the Kuvryn Ant buildcache feed
+# (ant-setup-action build-cache). kw replicates oci-hosted.
 #
 # Login is GitHub OIDC through azrtydxb/ant-setup-action: no stored secret. The
 # caller must grant `permissions: id-token: write` (main, master and v* tags get a
@@ -74,9 +75,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # GitHub-hosted runners (public callers): BuildKit with the Ant registry cache.
       # Docker Hub is reached through the Kuvryn Ant mirror, never anonymously.
       # The 192.168.10.131 entries only matter for base images still named there.
-      - uses: docker/setup-buildx-action@v4
+      - if: ${{ runner.environment == 'github-hosted' }}
+        uses: docker/setup-buildx-action@v4
         with:
           buildkitd-config-inline: |
             [registry."192.168.10.131"]
@@ -89,7 +92,9 @@ jobs:
       - id: ant
         uses: azrtydxb/ant-setup-action@v1
         with:
-          build-cache: "true"
+          # The registry layer cache is only for BuildKit (GitHub-hosted); on quadronix
+          # Buildah uses the shared layer store of the runners.
+          build-cache: ${{ runner.environment == 'github-hosted' && 'true' || 'false' }}
           cache-name: ${{ inputs.image }}
           cache-write: ${{ inputs.push && github.event_name == 'push' }}
           docker-login: "true"
@@ -98,7 +103,23 @@ jobs:
           cargo: "false"
           pip: "false"
 
-      - uses: docker/build-push-action@v7
+      # quadronix runners (private callers): Buildah through the runner pod's podman sidecar.
+      - if: ${{ runner.environment == 'self-hosted' }}
+        uses: azrtydxb/image-build-action@v1
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          target: ${{ inputs.target }}
+          platforms: ${{ inputs.platforms }}
+          build-args: |
+            COMMIT=${{ github.sha }}
+            ${{ inputs.build-args }}
+          push: ${{ inputs.push && github.event_name == 'push' }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ inputs.image }}:sha-${{ github.sha }}
+
+      - if: ${{ runner.environment == 'github-hosted' }}
+        uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.context }}
           file: ${{ inputs.file }}
