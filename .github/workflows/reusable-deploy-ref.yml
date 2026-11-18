@@ -1,0 +1,235 @@
+# Reusable deploy-ref mover: keeps a GitOps deploy branch (e.g. deploy/dev) on a commit whose
+# Kuvryn Sync values and pinned images belong together.
+#
+# The problem it fixes (Kuvryn-Orbit#370): Kuvryn Sync applied a PR's new values from main
+# at merge time, while the image that understands them was pinned only after the build, an
+# hour later. Values and image reached the cluster on different commits.
+#
+# The fix: the Kuvryn Sync Repository (or Application source.revision) of an auto-pinned
+# environment tracks this deploy branch instead of main. The caller's publish job keeps
+# pinning digests into main exactly as before; this workflow then fast-forwards the deploy
+# branch along main, but never past a commit whose images are not built and pinned yet:
+#
+#   - a commit is safe when this run's build contains it (an ancestor of the built commit)
+#     or when it only touches deploy-only paths (values, charts, pin commits, docs);
+#   - the walk stops at the first commit that is neither; the build of that commit moves
+#     the ref past it later;
+#   - with `pins`, the ref only moves once those digests/tags are on the branch (the dev
+#     pin PR may still be merging), so a failed or unpinned build never moves it;
+#   - the push is a plain fast-forward (no force): the server rejects anything else, so
+#     two runs racing can never move the ref backwards, and a stale run is a no-op.
+#
+# Callers:
+#   - after the publish job, with `pins` = the digests (or tags) it pinned for this env,
+#     `needs: publish` (a failed build skips this job);
+#   - optionally on pushes that build nothing (deploy-only changes), without `pins`: the
+#     ref then follows main only across deploy-only commits.
+#
+# Requires `permissions: contents: write` on the calling job (GITHUB_TOKEN pushes the ref;
+# a GITHUB_TOKEN push starts no workflow). See docs/ci-standard.md §Deploy refs.
+name: reusable-deploy-ref
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Deploy branch the environment's Kuvryn Sync source tracks, e.g. deploy/dev. Never the source branch.
+        type: string
+        required: true
+      branch:
+        description: Source branch the deploy branch follows.
+        type: string
+        default: main
+      pins:
+        description: Whitespace- or comma-separated digests or tags this run pinned for the environment. Empty means this run built nothing.
+        type: string
+        default: ""
+      deploy-only-paths:
+        description: Whitespace-separated git pathspecs whose changes never change an image (values, charts, docs). Keep in line with the publish workflow's paths-ignore.
+        type: string
+        default: "deploy/kuvryn-sync"
+      wait-minutes:
+        description: How long to wait for `pins` to reach the source branch (an auto-merging pin PR). Keep under 30 (the job times out at 40).
+        type: number
+        default: 20
+      runner:
+        description: Runner label override. Empty (default) picks by caller visibility, arc-azrtydxb-amd64 (quadronix) for private repos and ubuntu-latest (GitHub-hosted) for public ones.
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  deploy-ref:
+    runs-on: ${{ inputs.runner != '' && inputs.runner || (github.event.repository.private && 'arc-azrtydxb-amd64' || 'ubuntu-latest') }}
+    timeout-minutes: 40 # wait-minutes (default 20) plus the walk and push
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Move ${{ inputs.ref }}
+        shell: bash
+        env:
+          REF: ${{ inputs.ref }}
+          BRANCH: ${{ inputs.branch }}
+          BUILT_SHA: ${{ github.sha }}
+          PINS: ${{ inputs.pins }}
+          DEPLOY_ONLY: ${{ inputs.deploy-only-paths }}
+          WAIT_MINUTES: ${{ inputs.wait-minutes }}
+        run: |
+          set -euo pipefail
+          # Inputs (env): REF BRANCH BUILT_SHA PINS DEPLOY_ONLY WAIT_MINUTES; optional REMOTE, POLL_SECONDS.
+          remote=${REMOTE:-origin}
+          poll=${POLL_SECONDS:-30}
+          case "$REF" in
+            "" | "$BRANCH" | main | master)
+              echo "::error::ref '$REF' must be a dedicated deploy branch, not the source branch" >&2
+              exit 1
+              ;;
+          esac
+          # Whitespace- or comma-separated lists; read -a does not glob, so pathspecs stay intact.
+          read -r -a pins <<<"$(printf '%s' "${PINS:-}" | tr ',\n' '  ')"
+          read -r -a only <<<"$(printf '%s' "${DEPLOY_ONLY:-}" | tr ',\n' '  ')"
+          excludes=()
+          for p in "${only[@]}"; do
+            case "$p" in
+              ":("*) excludes+=(":(exclude,${p#:(}") ;; # merge into the existing magic, e.g. :(glob)
+              *) excludes+=(":(exclude)$p") ;;
+            esac
+          done
+
+          fetch_branch() {
+            git fetch --quiet --no-tags "$remote" "+refs/heads/${BRANCH}:refs/remotes/${remote}/${BRANCH}"
+            git rev-parse "refs/remotes/${remote}/${BRANCH}"
+          }
+          # deploy_tip: the deploy ref's commit, empty when the ref does not exist yet.
+          deploy_tip() {
+            local line
+            line=$(git ls-remote "$remote" "refs/heads/${REF}")
+            [ -n "$line" ] || return 0
+            git fetch --quiet --no-tags "$remote" "+refs/heads/${REF}:refs/remotes/${remote}/${REF}"
+            git rev-parse "refs/remotes/${remote}/${REF}"
+          }
+          # landed <commit>: every pin is written somewhere under the deploy-only paths at <commit>.
+          landed() {
+            local pin
+            for pin in "${pins[@]}"; do
+              git grep -qF -e "$pin" "$1" -- "${only[@]}" || return 1
+            done
+          }
+          # superseded <tip>: every pin was written on the branch after the built commit and has been
+          # replaced since, i.e. a newer build pinned over this one; that build's run moves the ref.
+          superseded() {
+            local pin
+            for pin in "${pins[@]}"; do
+              [ -n "$(git log -1 --format=%H -S"$pin" "${BUILT_SHA}..$1" -- "${only[@]}")" ] || return 1
+            done
+          }
+          # image_affecting <commit>: the commit changes something outside the deploy-only paths,
+          # so the images built before it do not contain it.
+          image_affecting() {
+            git rev-parse --verify --quiet "$1^" >/dev/null || return 0
+            ! git diff --quiet "$1^" "$1" -- . "${excludes[@]}"
+          }
+
+          # 1. Wait for this build's pins to reach the branch (a pin PR may still be merging).
+          deadline=$(($(date +%s) + WAIT_MINUTES * 60))
+          while :; do
+            tip=$(fetch_branch)
+            if ! git merge-base --is-ancestor "$BUILT_SHA" "$tip"; then
+              echo "::error::${BUILT_SHA} is not on ${BRANCH} (${tip}); refusing to move ${REF}" >&2
+              exit 1
+            fi
+            [ "${#pins[@]}" -eq 0 ] && break
+            landed "$tip" && break
+            if superseded "$tip"; then
+              echo "::notice::a newer build has already pinned over the pins of ${BUILT_SHA}; its run moves ${REF}"
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::the pins of ${BUILT_SHA} (${pins[*]}) did not reach ${BRANCH} within ${WAIT_MINUTES} min; ${REF} stays where it is" >&2
+              exit 1
+            fi
+            echo "waiting for the pins of ${BUILT_SHA} to reach ${BRANCH}"
+            sleep "$poll"
+          done
+
+          # 2. Where the deploy ref is now, and which commit is vouched for by a finished build.
+          current=$(deploy_tip)
+          if [ "${#pins[@]}" -gt 0 ]; then
+            built=$BUILT_SHA
+          else
+            built=$current # no build in this run: only deploy-only commits may follow the ref
+          fi
+          if [ -z "$built" ]; then
+            echo "::notice::${REF} does not exist and this run built nothing; it is created by the first run that pins images"
+            exit 0
+          fi
+          if [ -n "$current" ]; then
+            if git merge-base --is-ancestor "$tip" "$current"; then
+              echo "::notice::${REF} (${current}) already contains ${BRANCH} ${tip}; nothing to do"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$current" "$tip"; then
+              echo "::error::${REF} (${current}) is not an ancestor of ${BRANCH} (${tip}); fix the ref by hand" >&2
+              exit 1
+            fi
+            from=$current
+          else
+            from=$built
+          fi
+
+          # 3. Walk the branch forward from the ref. A commit is safe when the build vouches for it
+          # (it is an ancestor of the built commit) or it only touches deploy-only paths (values,
+          # charts, pins, docs). The first commit that is neither stops the walk: the image that
+          # contains it is not built yet, and that build's own run moves the ref past it.
+          target=
+          blocked=
+          while read -r c; do
+            if git merge-base --is-ancestor "$c" "$built" || ! image_affecting "$c"; then
+              target=$c
+            else
+              blocked=$c
+              break
+            fi
+          done < <(git rev-list --reverse --first-parent "${from}..${tip}")
+          if [ -n "$blocked" ]; then
+            echo "::notice::stopping before $(git log -1 --format='%h %s' "$blocked"): it changes the images and its build has not pinned yet"
+          fi
+          if [ -z "$target" ]; then
+            [ -n "$current" ] || target=$built
+          fi
+          if [ -z "$target" ] || [ "$target" = "$current" ]; then
+            echo "::notice::${REF} stays at ${current}"
+            exit 0
+          fi
+          if [ "${#pins[@]}" -gt 0 ] && ! landed "$target"; then
+            echo "::notice::the pins of ${BUILT_SHA} are not in ${target} yet; ${REF} stays at ${current:-nothing}"
+            exit 0
+          fi
+
+          # 4. Fast-forward only: the server rejects a push that is not a fast-forward, so two runs
+          # racing can never move the ref backwards. A rejected push is fine when the ref moved
+          # past the target meanwhile.
+          for attempt in 1 2 3; do
+            if git push --quiet "$remote" "${target}:refs/heads/${REF}"; then
+              echo "${REF}: ${current:-(new)} -> ${target} ($(git log -1 --format='%h %s' "$target"))"
+              if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                printf "### %s\n\nMoved from \`%s\` to \`%s\` (%s).\n" "$REF" "${current:-(new)}" "$target" "$(git log -1 --format='%s' "$target")" >>"$GITHUB_STEP_SUMMARY"
+              fi
+              exit 0
+            fi
+            now=$(deploy_tip)
+            if [ -n "$now" ] && git merge-base --is-ancestor "$target" "$now"; then
+              echo "::notice::${REF} moved to ${now} meanwhile, which contains ${target}"
+              exit 0
+            fi
+            if [ -n "$now" ] && ! git merge-base --is-ancestor "$now" "$target"; then
+              echo "::error::${REF} moved to ${now}, which is not an ancestor of ${target}" >&2
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push ${REF}" >&2
+          exit 1

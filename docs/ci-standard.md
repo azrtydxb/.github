@@ -8,12 +8,12 @@ us with 9 runner labels, 4 action-pinning styles and almost no shared caching.
 
 Decided 2026-11-06: the runner follows the repo's visibility.
 
-| Repo                      | Use                                         | Label                                              |
-| ------------------------- | ------------------------------------------- | -------------------------------------------------- |
-| **Public**                | Linux CI, image build and push              | `ubuntu-latest` (GitHub-hosted, amd64)             |
-| **Public**                | Native arm64 tests (not image builds)       | `ubuntu-24.04-arm` (GitHub-hosted)                 |
-| **Private**               | Everything on Linux                         | `arc-azrtydxb-amd64` (ARC on quadronix, amd64)     |
-| Either                    | macOS / Windows jobs that need those OSes   | `macos-latest`, `windows-latest`                   |
+| Repo        | Use                                       | Label                                          |
+| ----------- | ----------------------------------------- | ---------------------------------------------- |
+| **Public**  | Linux CI, image build and push            | `ubuntu-latest` (GitHub-hosted, amd64)         |
+| **Public**  | Native arm64 tests (not image builds)     | `ubuntu-24.04-arm` (GitHub-hosted)             |
+| **Private** | Everything on Linux                       | `arc-azrtydxb-amd64` (ARC on quadronix, amd64) |
+| Either      | macOS / Windows jobs that need those OSes | `macos-latest`, `windows-latest`               |
 
 Public repos never use a self-hosted label. Private repos never use `ubuntu-*` or the
 arm64 OKE set `arc-azrtydxb`. The reusable workflows pick the label for you from the
@@ -63,7 +63,7 @@ permissions:
   id-token: write
 steps:
   - uses: actions/checkout@v7
-  - uses: azrtydxb/ant-setup-action@v1  # (docker-login: "true" to push to ant.azrty.com/oci-hosted/...)
+  - uses: azrtydxb/ant-setup-action@v1 # (docker-login: "true" to push to ant.azrty.com/oci-hosted/...)
 ```
 
 `main`, `master` and `v*` tags get publish on `oci-hosted`; every other ref is read-only.
@@ -83,12 +83,46 @@ Maven, NuGet, Composer, RubyGems and SwiftPM are not configured by the action.
 | `reusable-docker-publish.yml`       | images   | `image`, `context`, `target`, `platforms`                      |
 | `reusable-security.yml`             | any      | `runner`                                                       |
 | `reusable-dependabot-automerge.yml` | any      | `merge-method`, `allow-major`                                  |
+| `reusable-deploy-ref.yml`           | GitOps   | `ref`, `pins`, `deploy-only-paths`                             |
 
 Reference them at `@main`:
 
 ```yaml
 uses: azrtydxb/.github/.github/workflows/reusable-go.yml@main
 ```
+
+## Deploy refs (auto-pinned environments)
+
+An environment whose image digests CI pins after the build (dev, kw) must not have
+Kuvryn Sync read `main` directly: a PR that changes code and the values it accepts would
+reach the cluster with its new values an hour before the image that reads them
+(Kuvryn-Orbit#370). Instead the environment's Kuvryn Sync `Repository` (or the
+Application's `source.revision`) tracks a deploy branch, `deploy/<env>`, and
+`reusable-deploy-ref.yml` moves that branch:
+
+```yaml
+deploy-ref:
+  needs: publish # a failed build never moves the ref
+  permissions:
+    contents: write
+  uses: azrtydxb/.github/.github/workflows/reusable-deploy-ref.yml@main
+  with:
+    ref: deploy/dev
+    pins: ${{ needs.publish.outputs.pins }} # the digests/tags the publish job pinned
+```
+
+- The publish job keeps pinning into `main` as before; prod pin PRs are untouched (prod
+  still tracks `main` and a human merges its pin).
+- The deploy branch only fast-forwards along `main`, and never past a commit that changes
+  an image (anything outside `deploy-only-paths`, default `deploy/kuvryn-sync`) unless this
+  run's build contains it and its pins are on `main`. Values-only commits ride along.
+- No force push: two runs racing cannot move it backwards, and a stale run is a no-op.
+- A repo whose publish workflow skips deploy-only pushes (`paths-ignore`) may also call it
+  on those pushes without `pins`, so a values-only change reaches the environment without
+  a build.
+- Roll out by creating the branch at the commit the environment runs now (the
+  Application's `status.desiredRevision`), then switching the Repository revision: the
+  switch then changes nothing on the cluster.
 
 ## Test tiers
 
